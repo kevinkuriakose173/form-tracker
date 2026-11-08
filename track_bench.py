@@ -64,13 +64,23 @@ def run():
     ap.add_argument('--model',default=str(project/'models/pose_landmarker_heavy.task'))
     ap.add_argument('--out',default=str(project/'results/latest'))
     ap.add_argument('--start-frame',type=int,default=300)
+    ap.add_argument('--bar-weights',type=Path,help='Custom one-keypoint YOLO weights; omit to use template matching')
+    ap.add_argument('--bar-confidence',type=float,default=.25,help='YOLO box confidence threshold')
+    ap.add_argument('--keypoint-confidence',type=float,default=.5)
+    ap.add_argument('--device',default=None,help='YOLO device, e.g. cpu or mps')
     a=ap.parse_args(); out=Path(a.out); out.mkdir(parents=True,exist_ok=True)
     cap=cv2.VideoCapture(a.video,cv2.CAP_FFMPEG)
     if not cap.isOpened(): raise RuntimeError('Cannot open video')
     fps=cap.get(cv2.CAP_PROP_FPS); total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     sw=int(cap.get(3)); sh=int(cap.get(4)); w=540; h=round(sh*w/sw)
     cap.set(cv2.CAP_PROP_POS_FRAMES,a.start_frame)
-    matcher=BarEndMatcher(a.video); history=[]; records=[]; visible=Counter()
+    if a.bar_weights:
+        from barbell_detector import BarbellDetector
+        matcher=BarbellDetector(a.bar_weights,a.bar_confidence,a.keypoint_confidence,a.device)
+    else:
+        matcher=BarEndMatcher(a.video)
+    bar_method='yolo_keypoint' if a.bar_weights else 'template_match'
+    history=[]; records=[]; visible=Counter()
     canvas_w=w+380
     cmd=[imageio_ffmpeg.get_ffmpeg_exe(),'-y','-loglevel','error','-f','rawvideo',
          '-vcodec','rawvideo','-pix_fmt','bgr24','-s',f'{canvas_w}x{h}',
@@ -119,14 +129,14 @@ def run():
             cv2.circle(frame,tuple(np.rint(bar).astype(int)),8,(20,165,255),2,cv2.LINE_AA)
             label(frame,'bar end',(round(bar[0])+12,round(bar[1])-12),(20,195,255))
           records.append({'frame':frame_id,'source_time_s':frame_id/fps,'landmarks':landmarks,
-              'bar_match_score':bar_quality,
-              'bar':None if bar is None else {'x':bar[0],'y':bar[1],'method':'template_match'}})
+              'bar_score':bar_quality,'bar_method':bar_method,
+              'bar':None if bar is None else {'x':bar[0],'y':bar[1],'method':bar_method}})
           panel=np.full((h,380,3),(27,23,19),np.uint8)
           label(panel,'BENCH / FIRST TRACKING PASS',(22,36),(235,240,245),.56)
           label(panel,f'Source time: {frame_id/fps:.2f}s',(22,72))
           label(panel,'Body: MediaPipe Pose Heavy',(22,108),(215,245,100))
           label(panel,'Visible-side estimates only',(22,132))
-          label(panel,'Bar: reference-image matching',(22,172),(20,195,255))
+          label(panel,'Bar: '+('YOLO keypoint inference' if a.bar_weights else 'reference-image matching'),(22,172),(20,195,255))
           label(panel,'Point = visible bar-end center',(22,196))
           label(panel,'2D image coordinates; no depth',(22,234))
           label(panel,'BAR-END TRAIL / IMAGE SPACE',(22,292),(235,240,245))
@@ -142,9 +152,9 @@ def run():
           label(panel,'Hidden / uncertain joints omitted',(22,724))
           label(panel,'Bar status: '+('matched' if bar else 'uncertain / omitted'),(22,764),(140,180,245))
           label(panel,'No form or injury scoring',(22,788),(140,180,245))
-          label(panel,'Two manually selected bar references',(22,820),scale=.44)
+          label(panel,'Custom model' if a.bar_weights else 'Two manually selected bar references',(22,820),scale=.44)
           label(panel,'Missing matches leave gaps in trail',(22,844),scale=.44)
-          label(panel,'Setup omitted: starts at frame 300',(22,h-30),scale=.44)
+          label(panel,f'Start frame: {a.start_frame}',(22,h-30),scale=.44)
           canvas=np.hstack([frame,panel]); encoder.stdin.write(canvas.tobytes())
           if frame_id in [300,360,436,500,581,650,726]:
             cv2.imwrite(str(out/f'preview_{frame_id}.jpg'),canvas)
@@ -157,13 +167,19 @@ def run():
       for row in records: f.write(json.dumps(row,allow_nan=False)+'\n')
     summary={'source':a.video,'source_width':sw,'source_height':sh,'analysis_width':w,'analysis_height':h,
       'source_fps':fps,'source_frame_count':total,'start_frame':a.start_frame,'processed_frames':len(records),
-      'bar_reference_frames':[300,436],'bar_match_threshold':BAR_MATCH_THRESHOLD,'pose_missing_frames':misses,
+      'bar_method':bar_method,
+      'bar_reference_frames':None if a.bar_weights else [300,436],
+      'bar_match_threshold':None if a.bar_weights else BAR_MATCH_THRESHOLD,
+      'bar_weights':str(a.bar_weights.resolve()) if a.bar_weights else None,
+      'bar_box_confidence':a.bar_confidence if a.bar_weights else None,
+      'bar_keypoint_confidence':a.keypoint_confidence if a.bar_weights else None,
+      'pose_missing_frames':misses,
       'landmark_frames_above_display_threshold':dict(visible),'bar_accepted_frames':sum(x['bar'] is not None for x in records),
       'processing_seconds':time.perf_counter()-t0,
       'notes':['Pixel positions in resized image, not physical measurements.',
         'Visibility scores and tracker success are not ground-truth accuracy.',
-        'Two manually selected bar templates plus wrist-guided search; specific to this clip.',
-        f'Normalized correlation >= {BAR_MATCH_THRESHOLD} accepted; score is not probability of correctness.',
+        'Custom YOLO keypoint inference; no template fallback.' if a.bar_weights else 'Two manually selected bar templates plus wrist-guided search; specific to this clip.',
+        'Confidence scores are not calibrated correctness probabilities.' if a.bar_weights else f'Normalized correlation >= {BAR_MATCH_THRESHOLD} accepted; score is not probability of correctness.',
         'Near-side landmarks displayed; both sides preserved in JSONL.']}
     (out/'summary.json').write_text(json.dumps(summary,indent=2))
     print(json.dumps(summary,indent=2))

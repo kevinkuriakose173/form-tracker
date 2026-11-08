@@ -1,0 +1,4 @@
+-r requirements.txt
+ultralytics==8.4.207
+torch==2.15.0
+PyYAML==6.0.3

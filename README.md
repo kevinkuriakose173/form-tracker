@@ -2,6 +2,8 @@
 
 A Python prototype for reviewing bench-press footage with body landmarks and a bar-path overlay. MediaPipe estimates body landmarks, OpenCV locates the visible bar end through template matching, and FFmpeg exports an annotated replay.
 
+Custom model workflow: see [TRAINING.md](TRAINING.md) for frame extraction, local annotation, YOLO keypoint fine-tuning, and session-based evaluation. The template matcher remains the default; custom bar-end weights must be trained before enabling model-based inference.
+
 ## Setup
 
 Tested with Python 3.12 on macOS Apple Silicon.

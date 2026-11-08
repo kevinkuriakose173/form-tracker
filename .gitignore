@@ -8,3 +8,8 @@ form_videos/
 .env
 .env.*
 !.env.example
+datasets/
+runs/
+models/*.pt
+*.cache
+.ultralytics/
